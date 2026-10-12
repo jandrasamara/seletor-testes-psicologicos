@@ -1,8 +1,73 @@
 import re
+from io import BytesIO
+from datetime import datetime
+from xml.sax.saxutils import escape
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, KeepTogether
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 import unicodedata
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+
+def make_triage_pdf(snapshot):
+    """Generate an anonymous, descriptive triage report; not a psychological document."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=44, leftMargin=44,
+                            topMargin=46, bottomMargin=45)
+    font_path = Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+    if font_path.exists() and 'DejaVuSans' not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont('DejaVuSans', str(font_path)))
+    font = 'DejaVuSans' if 'DejaVuSans' in pdfmetrics.getRegisteredFontNames() else 'Helvetica'
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='TTitle', fontName=font, fontSize=15, leading=21, spaceAfter=13,
+                              textColor=colors.HexColor('#17365D')))
+    styles.add(ParagraphStyle(name='THeading', fontName=font, fontSize=10, leading=15, spaceBefore=12,
+                              spaceAfter=5, textColor=colors.HexColor('#17365D')))
+    styles.add(ParagraphStyle(name='TBody', fontName=font, fontSize=8.6, leading=13, spaceAfter=5))
+    styles.add(ParagraphStyle(name='TSmall', fontName=font, fontSize=7.5, leading=11, spaceAfter=5,
+                              textColor=colors.HexColor('#505B66')))
+    story = []
+    def add(txt, style='TBody'):
+        story.append(Paragraph(escape(str(txt)).replace('\\n', '<br/>'), styles[style]))
+    add('Resumo de apoio à seleção de instrumentos psicológicos', 'TTitle')
+    add('Triagem informativa — não é laudo, relatório, parecer, atestado ou documento psicológico oficial.', 'TSmall')
+    add('Data da consulta: '+snapshot['date']+' | Banco: '+snapshot['bank'])
+    add('Parâmetros informados', 'THeading')
+    for label, value in snapshot['filters'].items():
+        add(label+': '+str(value))
+    add('Resultados da triagem', 'THeading')
+    for group in ['Compatível com dados cadastrados', 'Possível — conferir', 'Incompatível']:
+        subset = [r for r in snapshot['results'] if r['Grupo'] == group]
+        add(group+' ('+str(len(subset))+')', 'THeading')
+        if not subset:
+            add('Nenhum instrumento nesta categoria.')
+        for r in subset:
+            block = [Paragraph(escape(r['Teste']), styles['TBody'])]
+            for title, field in [('Critérios atendidos','Atendidos'), ('Pontos a conferir','Conferir'),
+                                 ('Incompatibilidades','Incompatíveis')]:
+                if r[field]:
+                    block.append(Paragraph(escape(title+': '+'; '.join(r[field])), styles['TSmall']))
+            if r['Observações']:
+                block.append(Paragraph(escape('Observações do banco: '+r['Observações']), styles['TSmall']))
+            block.append(Spacer(1, 5))
+            story.append(KeepTogether(block))
+    add('Cuidados e limites', 'THeading')
+    add('A seleção depende da demanda, do contexto, de outras fontes de informação e do julgamento técnico do profissional. '
+        'Antes de utilizar um instrumento, verificar manual, condições autorizadas, população normativa e situação vigente no SATEPSI. '
+        'Campos em branco não equivalem a autorização. Os dados do banco podem estar desatualizados.', 'TSmall')
+    add('Referências gerais: Resolução CFP nº 31/2022; Resolução CFP nº 06/2019; https://satepsi.cfp.org.br/', 'TSmall')
+    def footer(canvas, document):
+        canvas.setFont('Helvetica', 8)
+        canvas.setFillColor(colors.grey)
+        canvas.drawRightString(A4[0]-44, 24, 'Página '+str(document.page))
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    return buf.getvalue()
+
 
 st.set_page_config(page_title='Seletor de instrumentos psicológicos', page_icon='🧠', layout='wide')
 BASE = Path(__file__).with_name('Banco_SATEPSI_universal.xlsx')
@@ -107,6 +172,62 @@ for _, record in db['Dicionario_Construtos'].iterrows():
         dictionary[key(record['Construto'])] = (clean(record.get('Descricao')), clean(record.get('Contextos_de_Uso')), clean(record.get('O_que_pode_mensurar')), clean(record.get('Cuidados_e_limites')))
 
 
+
+# Conteúdo educativo independente do banco importado.
+CONTEXTOS = {
+    'Clínico / Psicodiagnóstico': ('Delimitar a demanda, realizar levantamento da história pertinente e integrar fontes fundamentais; avaliar hipóteses sem reduzir o processo a um escore.', 'CFP 31/2022; CFP 06/2019'),
+    'Neuropsicológico': ('Identificar funções e perguntas clínicas, condições de saúde, acessibilidade, escolaridade e normas específicas dos instrumentos.', 'CFP 31/2022; CFP 06/2019'),
+    'Organizacional e trabalho': ('Esclarecer finalidade e atribuições, pertinência dos construtos, privacidade e prevenção de discriminação.', 'CFP 31/2022; Código de Ética'),
+    'Concursos públicos': ('Verificar análise profissiográfica, edital, requisitos previamente definidos, banca, devolutiva e procedimentos recursais.', 'CFP 08/2025; CFP 31/2022'),
+    'Trânsito': ('Conferir regras atuais do sistema de trânsito, credenciamento e procedimentos próprios da finalidade.', 'CFP 31/2022; normas setoriais vigentes'),
+    'Porte de arma': ('Conferir requisitos da autoridade competente, habilitação profissional e regras específicas de avaliação.', 'CFP 31/2022; normas setoriais vigentes'),
+    'Escolar / Educacional': ('Considerar desenvolvimento, contexto pedagógico, acessibilidade, múltiplas fontes e risco de rotulação.', 'CFP 31/2022; Código de Ética'),
+    'Hospitalar / Saúde': ('Definir a demanda assistencial, condições clínicas, articulação multiprofissional e limites do compartilhamento de informações.', 'CFP 31/2022; CFP 06/2019'),
+    'Procedimentos em saúde': ('Verificar protocolos clínicos específicos, finalidade, autonomia e avaliação individualizada; não presumir indicação ou contraindicação.', 'CFP 31/2022; normas setoriais vigentes'),
+    'Forense / Judicial': ('Delimitar quesitos e papel profissional, imparcialidade, finalidade pericial e limites do sigilo e da comunicação.', 'CFP 31/2022; CFP 06/2019; normas específicas'),
+    'Assistência social / Políticas públicas': ('Considerar direitos, contexto social, demanda institucional e minimização de dados.', 'CFP 31/2022; Código de Ética'),
+    'Esporte': ('Delimitar finalidade, contexto esportivo e limites das inferências obtidas pelos instrumentos.', 'CFP 31/2022'),
+    'Orientação profissional': ('Considerar interesses, trajetória, oportunidades, contexto e autonomia; não tratar escores como destino profissional.', 'CFP 31/2022'),
+    'Outro / Não definido': ('Delimitar a demanda, verificar normas próprias da atividade e planejar fontes adequadas antes da escolha de instrumentos.', 'CFP 31/2022'),
+}
+CHECKLIST = [
+    'Demanda, finalidade e destinatários foram esclarecidos.',
+    'Foram consideradas fontes fundamentais pertinentes (entrevista, observação e/ou testes).',
+    'Condições de idade, escolaridade, acessibilidade e contexto foram consideradas.',
+    'Foram avaliados sigilo, informações necessárias, consentimento/informação e devolutiva.',
+    'Foram verificadas normas específicas do contexto e condições autorizadas dos instrumentos.',
+]
+DOCS = {
+    'Conclusões de avaliação psicológica': ('Laudo psicológico ou atestado psicológico, conforme a finalidade', 'Laudo: identificação; descrição da demanda; procedimentos; análise; conclusão; referências. Atestado: certificação objetiva de condição psicológica fundamentada em avaliação, com identificação, finalidade e demais elementos exigidos na norma.', 'Não há obrigação geral de emitir laudo apenas porque um teste foi aplicado. Verifique a finalidade e as regras setoriais.'),
+    'Acompanhamento ou intervenção psicológica': ('Relatório psicológico', 'Identificação; descrição da demanda; procedimentos; análise; conclusão.', 'Relatório não deve ser confundido com laudo decorrente de avaliação psicológica.'),
+    'Atuação em equipe multiprofissional': ('Relatório multiprofissional', 'Identificação; descrição da demanda; procedimentos; análise; conclusão, observando contribuições e responsabilidades profissionais.', 'Compartilhar apenas informações pertinentes e respeitar sigilo e competências.'),
+    'Consulta ou questão técnica específica': ('Parecer psicológico', 'Identificação; descrição da demanda; análise; conclusão; referências.', 'Parecer responde a questão técnica; não equivale automaticamente a avaliação direta de uma pessoa.'),
+    'Comparecimento ou acompanhamento (informação administrativa)': ('Declaração', 'Título; identificação da pessoa; finalidade; informações objetivas de comparecimento/acompanhamento; local, data e identificação profissional.', 'Não inserir sintomas, estados psicológicos ou diagnóstico em declaração.'),
+}
+LINKS_CFP = {
+    'SATEPSI e Resolução CFP 31/2022': 'https://satepsi.cfp.org.br/',
+    'Resolução CFP 06/2019 comentada': 'https://site.cfp.org.br/wp-content/uploads/2019/09/Resolu%C3%A7%C3%A3o-CFP-n-06-2019-comentada.pdf',
+    'Manual orientativo de documentos (CFP)': 'https://site.cfp.org.br/cfp-lanca-manual-de-orientacao-de-registro-e-elaboracao-de-documentos-psicologicos/',
+    'Resolução CFP 08/2025 (concursos)': 'https://site.cfp.org.br/cfp-publica-resolucao-que-regulamenta-a-avaliacao-psicologica-em-concursos-publicos/',
+    'Perguntas frequentes SATEPSI': 'https://satepsi.cfp.org.br/faq.cfm',
+}
+
+st.divider()
+st.subheader('🧭 Orientações para planejar a avaliação psicológica')
+st.info('**Avaliação psicológica não é sinônimo de testagem.** A avaliação é um processo técnico-científico que responde a uma demanda e integra informações pertinentes. Um teste é uma possível fonte fundamental; sua aplicação isolada não estabelece diagnóstico nem substitui a análise profissional. Base: Resolução CFP nº 31/2022.')
+with st.expander('Fontes de informação e etapas do processo', expanded=False):
+    st.markdown('**Fontes fundamentais (CFP 31/2022):** testes psicológicos aprovados pelo CFP; entrevistas psicológicas/anamnese; protocolos ou registros de observação de comportamentos, individuais ou grupais, e técnicas de grupo. A seleção depende da demanda; não é obrigatório aplicar teste em toda avaliação.')
+    st.markdown('**Fontes complementares:** técnicas e instrumentos não psicológicos com respaldo científico e documentos técnicos pertinentes, como relatórios multiprofissionais. Não substituem a fundamentação em fontes fundamentais.')
+    st.markdown('**Sequência orientativa:** delimitar demanda e finalidade → planejar fontes e procedimentos → verificar condições e normas → obter informações pertinentes → integrar achados e limites → realizar devolutiva e documentar quando cabível.')
+
+contexto = st.selectbox('Contexto principal da avaliação (orientação, não filtro automático de testes)', list(CONTEXTOS), key='contexto_etico')
+st.markdown('**Cuidados pertinentes ao contexto:** ' + CONTEXTOS[contexto][0])
+st.caption('Referências a conferir: ' + CONTEXTOS[contexto][1] + '. As normas setoriais podem impor exigências adicionais.')
+with st.expander('Checklist ético e técnico antes da aplicação', expanded=False):
+    for i, item in enumerate(CHECKLIST):
+        st.checkbox(item, key=f'etica_{i}')
+    st.caption('Este checklist é educativo, não comprova conformidade legal e não impede a consulta aos instrumentos.')
+
 with st.form('questionario'):
     st.subheader('1. Perfil da pessoa avaliada')
     a,b = st.columns(2)
@@ -203,9 +324,25 @@ if submit:
         st.warning('Selecione pelo menos um construto.')
     else:
         st.subheader('Resultados da busca')
+        st.info('Antes de utilizar qualquer indicação: confirme a demanda, a adequação das fontes, o manual e a situação atual no SATEPSI. Os resultados são uma triagem informativa, não uma autorização para aplicação.')
         st.caption('A escolaridade em branco ou indicada como independente não exclui o teste. Alertas sobre validação normativa e condições de aplicação são separados da compatibilidade de escolaridade.')
         st.write(f'Busca para pessoa de **{age} anos**, escolaridade **{school}**, aplicação **{', '.join(mode).lower()}**, formato **{', '.join(fmt).lower()}**, construto(s) **{", ".join(wanted)}**. Aceita outros construtos: **{extra.lower()}**.')
         results=[evaluate(t) for _,t in tests.iterrows()]
+        st.session_state['ultima_triagem'] = {
+            'date': datetime.now().strftime('%d/%m/%Y %H:%M'),
+            'bank': uploaded.name if uploaded is not None else BASE.name,
+            'filters': {
+                'Contexto declarado': contexto,
+                'Idade (anos)': age,
+                'Escolaridade': school,
+                'Modalidades aceitas': ', '.join(mode),
+                'Formatos aceitos': ', '.join(fmt),
+                'Construtos desejados': ', '.join(wanted),
+                'Aceita testes com outros construtos': extra,
+            },
+            'results': results,
+        }
+
         for group in ['Compatível com dados cadastrados','Possível — conferir','Incompatível']:
             subset=[r for r in results if r['Grupo']==group]
             st.markdown(f'### {group} ({len(subset)})')
@@ -222,6 +359,12 @@ if submit:
                     st.link_button('Conferir situação no SATEPSI', SATEPSI)
         output=pd.DataFrame([{'Teste':r['Teste'],'Classificação':r['Grupo'],'Atendidos':'; '.join(r['Atendidos']),'A conferir':'; '.join(r['Conferir']),'Incompatibilidades':'; '.join(r['Incompatíveis']),'Observações':r['Observações']} for r in results])
         st.download_button('Baixar análise (CSV)',output.to_csv(index=False).encode('utf-8-sig'),'analise_testes.csv','text/csv')
+        st.download_button('📄 Baixar resumo da triagem (PDF)',
+                           data=make_triage_pdf(st.session_state['ultima_triagem']),
+                           file_name='resumo_selecao_instrumentos.pdf',
+                           mime='application/pdf',
+                           help='Inclui respostas informadas, classificações e justificativas, sem identificação pessoal.')
+
 
 with st.expander('📚 Consultar todos os testes (sem filtros)'):
     # Visão integral: colunas originais e opções vinculadas às demais abas.
@@ -254,3 +397,104 @@ st.markdown('''**Boas práticas recomendadas:**
 st.info('**Sobre a atualização:** este protótipo não possui integração direta e automática com o SATEPSI. Como não foi disponibilizado aqui um acesso oficial de consulta automatizada, recomenda-se que o profissional realize a conferência diretamente no portal do CFP. A situação de um teste pode mudar após a elaboração da planilha.')
 st.link_button('Abrir SATEPSI para conferência oficial', SATEPSI)
 st.caption('Projeto acadêmico. As descrições dos construtos são orientativas e não reproduzem nem substituem os manuais técnicos.')
+
+
+st.divider()
+st.subheader('📄 Orientador aprofundado de documentos psicológicos')
+st.caption('Roteiro educativo baseado na Resolução CFP nº 06/2019. Não determina automaticamente qual documento emitir.')
+finalidade_doc = st.selectbox('Qual foi a finalidade do trabalho e da comunicação?', list(DOCS), key='finalidade_documento')
+doc_nome, doc_itens, doc_alerta = DOCS[finalidade_doc]
+st.info('**Documento(s) a considerar:** '+doc_nome)
+st.warning(doc_alerta)
+
+GUIAS_DOCUMENTAIS = {
+    'Laudo psicológico': {
+        'quando': 'Comunicar resultados e conclusões de um processo de avaliação psicológica, em resposta à demanda delimitada.',
+        'partes': [
+            ('Identificação', 'Título, pessoa ou instituição avaliada, solicitante, finalidade e identificação profissional conforme a norma.'),
+            ('Descrição da demanda', 'Origem da solicitação, motivo da avaliação, perguntas a responder e contexto relevante, com dados estritamente necessários.'),
+            ('Procedimentos', 'Métodos e fontes efetivamente utilizados, número e duração dos encontros quando pertinente, justificativa técnica das escolhas e instrumentos aplicados.'),
+            ('Análise', 'Integração fundamentada das informações, interpretação contextualizada, convergências e divergências entre fontes, limites e condições de validade. Não apresentar somente escores.'),
+            ('Conclusão', 'Resposta à demanda, limites das inferências, recomendações ou encaminhamentos pertinentes, sem extrapolar os dados.'),
+            ('Referências e formalização', 'Referências técnico-científicas pertinentes, data, assinatura e identificação profissional, conforme a Resolução 06/2019.')
+        ],
+        'cuidado': 'Não confundir laudo com transcrição de resultados brutos. Evitar expor conteúdo restrito de testes, informações irrelevantes ou diagnóstico sem sustentação.'
+    },
+    'Relatório psicológico': {
+        'quando': 'Comunicar atuação, acompanhamento, intervenções ou evolução do trabalho psicológico, sem substituir laudo de avaliação.',
+        'partes': [
+            ('Identificação', 'Título, pessoa ou instituição, solicitante, finalidade e profissional responsável.'),
+            ('Descrição da demanda', 'Situação que motivou o trabalho e objetivo do documento.'),
+            ('Procedimentos', 'Atividades, recursos e intervenções realizados, na medida necessária à finalidade.'),
+            ('Análise', 'Descrição fundamentada do desenvolvimento do trabalho e das informações pertinentes; distinguir relato, observação e interpretação.'),
+            ('Conclusão', 'Síntese, encaminhamentos e recomendações pertinentes; formalização e assinatura.')
+        ],
+        'cuidado': 'Não reproduzir integralmente sessões, informações sigilosas desnecessárias ou conclusões que não resultem do trabalho realizado.'
+    },
+    'Atestado psicológico': {
+        'quando': 'Certificar de forma sintética condição psicológica constatada em processo de avaliação, nos limites da finalidade legítima.',
+        'partes': [
+            ('Identificação e finalidade', 'Identificar a pessoa, a finalidade e o profissional, conforme requisitos normativos.'),
+            ('Informação certificada', 'Registrar somente o que foi tecnicamente fundamentado e necessário à finalidade, respeitando limites do sigilo.'),
+            ('Formalização', 'Local, data, assinatura e identificação profissional conforme as exigências aplicáveis.')
+        ],
+        'cuidado': 'Não usar para comprovar apenas comparecimento (nesse caso, considerar declaração). Observar regras específicas de afastamento, aptidão e saúde quando aplicáveis.'
+    },
+    'Relatório multiprofissional': {
+        'quando': 'Comunicar trabalho em equipe, com delimitação das contribuições e responsabilidades de cada profissão.',
+        'partes': [
+            ('Identificação e demanda', 'Finalidade e destinatário, identificação dos profissionais responsáveis.'),
+            ('Procedimentos e análise', 'Descrever contribuições e procedimentos pertinentes, distinguindo o que compete à Psicologia e às demais áreas.'),
+            ('Conclusão e formalização', 'Síntese e encaminhamentos, autoria e assinaturas conforme a norma.')
+        ],
+        'cuidado': 'Preservar sigilo e evitar que uma profissão assuma responsabilidade técnica por conclusões de outra.'
+    },
+    'Parecer psicológico': {
+        'quando': 'Responder, com fundamentação técnico-científica, a questão-problema específica da Psicologia.',
+        'partes': [
+            ('Identificação', 'Identificar objeto, solicitante e profissional responsável.'),
+            ('Descrição da demanda', 'Delimitar a questão técnica apresentada.'),
+            ('Análise', 'Apresentar fundamentação, fontes consultadas, argumentos e limites da apreciação.'),
+            ('Conclusão', 'Responder à questão proposta de modo fundamentado, com referências e formalização.')
+        ],
+        'cuidado': 'Um parecer não implica necessariamente avaliação direta da pessoa; não declarar achados de procedimentos que não foram realizados.'
+    },
+    'Declaração': {
+        'quando': 'Informar de maneira objetiva comparecimento, acompanhamento ou outra informação administrativa pertinente.',
+        'partes': [
+            ('Identificação', 'Identificar destinatário, pessoa e profissional nos termos aplicáveis.'),
+            ('Informação objetiva', 'Informar comparecimento ou acompanhamento e período, quando pertinente, sem interpretação psicológica.'),
+            ('Formalização', 'Local, data, assinatura e identificação profissional.')
+        ],
+        'cuidado': 'Não incluir sintomas, diagnósticos ou estados psicológicos na declaração.'
+    }
+}
+st.markdown('#### Explore um documento em profundidade')
+documento = st.selectbox('Documento para consultar o roteiro', list(GUIAS_DOCUMENTAIS), key='documento_detalhado')
+guia = GUIAS_DOCUMENTAIS[documento]
+st.markdown('**Quando considerar:** '+guia['quando'])
+st.markdown('**Estrutura orientativa — o que conferir em cada seção:**')
+for titulo, explicacao in guia['partes']:
+    with st.expander(titulo, expanded=True):
+        st.write(explicacao)
+st.warning('**Cuidados específicos:** '+guia['cuidado'])
+st.markdown('#### Perguntas de revisão antes de emitir')
+for i, questao in enumerate([
+    'O documento responde à finalidade e à demanda efetivamente atendidas?',
+    'As afirmações estão fundamentadas em fontes e procedimentos realizados?',
+    'Foram registrados os limites das informações e da interpretação?',
+    'O destinatário receberá apenas informações necessárias e pertinentes?',
+    'A modalidade e a estrutura correspondem à Resolução CFP nº 06/2019?',
+    'Foram conferidas as normas específicas do contexto, a devolutiva e a guarda?'
+]):
+    st.checkbox(questao, key=f'revisao_doc_{i}')
+st.caption('Os tópicos são auxiliares de revisão e não modelos oficiais prontos para preenchimento. Consulte os artigos e os modelos comentados do CFP antes de emitir documentos.')
+with st.expander('Referências oficiais para consulta'):
+    for titulo, url in LINKS_CFP.items():
+        st.markdown(f'- [{titulo}]({url})')
+
+st.divider()
+st.subheader('🔐 Privacidade, registros e guarda')
+st.warning('**Protótipo acadêmico:** não há armazenamento permanente intencional das consultas em banco de dados próprio, mas arquivos e informações podem ser processados temporariamente pela infraestrutura de hospedagem. Este sistema não passou por avaliação completa de conformidade com a LGPD. Não insira nomes, identificadores, dados clínicos ou resultados reais de pessoas avaliadas.')
+st.info('**Guarda documental:** a Resolução CFP nº 01/2009 estabelece prazo mínimo geral de **5 anos** para o registro documental, sujeito a ampliação por legislação específica ou outras circunstâncias aplicáveis. O prazo não autoriza descarte automático; confira as regras vigentes e a segurança da guarda.')
+st.caption('Material de apoio à formação e à prática responsável. Não substitui normas oficiais, manuais técnicos, prontuário ou julgamento profissional. Revise as fontes antes de decisões reais.')
