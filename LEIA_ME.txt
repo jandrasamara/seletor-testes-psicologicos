@@ -1,0 +1,5 @@
+VERSÃO 5
+Copie app.py e Banco_SATEPSI_universal.xlsx para a pasta do projeto, substituindo os arquivos antigos. Mantenha .venv.
+A escolaridade em branco ou independente não restringe a busca; níveis mínimos são comparados em ordem.
+Dicionario_Construtos contém definições, medidas, contextos e limites.
+A situação oficial de testes e permissões de aplicação devem ser verificadas no SATEPSI e nos manuais.
